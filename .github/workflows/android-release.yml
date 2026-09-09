@@ -4,6 +4,8 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: read
@@ -20,6 +22,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+          cache: gradle
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
@@ -28,7 +31,7 @@ jobs:
           cache: true
 
       - name: Generate Android platform files
-        run: flutter create . --platforms=android --project-name=music_collecter
+        run: flutter create --platforms=android --project-name=music_collecter .
 
       - name: Install dependencies
         run: flutter pub get
