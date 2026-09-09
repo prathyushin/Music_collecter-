@@ -3,14 +3,14 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from urllib.parse import urlparse, unquote
+from urllib.parse import unquote, urlparse
 
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, HttpUrl
 
-app = FastAPI(title="Music Collecter API", version="1.1.0")
+app = FastAPI(title="Music Collecter API", version="1.2.0")
 DOWNLOAD_ROOT = Path(os.getenv("MUSIC_COLLECTER_DOWNLOADS", "downloads")).resolve()
 DOWNLOAD_ROOT.mkdir(parents=True, exist_ok=True)
 
@@ -23,6 +23,7 @@ AUDIO_TYPES = {
     "audio/flac": ".flac",
     "audio/wav": ".wav",
     "audio/x-wav": ".wav",
+    "audio/webm": ".webm",
 }
 
 
@@ -35,6 +36,7 @@ class DownloadResponse(BaseModel):
     filename: str
     size: int
     content_type: str
+    download_url: str
 
 
 def safe_filename(value: str, fallback: str = "track") -> str:
@@ -50,9 +52,26 @@ def validate_source(url: str) -> None:
         raise HTTPException(status_code=400, detail="Only valid HTTP(S) media URLs are supported.")
 
 
+def media_suffix(content_type: str, url: str) -> str | None:
+    suffix = AUDIO_TYPES.get(content_type.lower())
+    if suffix:
+        return suffix
+    candidate = Path(urlparse(url).path).suffix.lower()
+    return candidate if candidate in AUDIO_TYPES.values() else None
+
+
+def unique_target(stem: str, suffix: str) -> Path:
+    target = DOWNLOAD_ROOT / f"{stem}{suffix}"
+    counter = 1
+    while target.exists():
+        target = DOWNLOAD_ROOT / f"{stem} ({counter}){suffix}"
+        counter += 1
+    return target
+
+
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "music-collecter", "version": "1.1.0"}
+    return {"status": "ok", "service": "music-collecter", "version": app.version}
 
 
 @app.post("/analyze")
@@ -62,14 +81,21 @@ async def analyze(request: UrlRequest):
     try:
         async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
             response = await client.head(url)
+            if response.status_code in {405, 501}:
+                response = await client.get(url, headers={"Range": "bytes=0-0"})
+            response.raise_for_status()
             content_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
             length = response.headers.get("content-length")
-        supported = content_type in AUDIO_TYPES or Path(urlparse(url).path).suffix.lower() in AUDIO_TYPES.values()
+            suffix = media_suffix(content_type, str(response.url))
+
+        supported = suffix is not None
         return {
             "url": url,
-            "host": urlparse(url).netloc,
+            "resolved_url": str(response.url),
+            "host": urlparse(str(response.url)).netloc,
             "content_type": content_type or "unknown",
             "size": int(length) if length and length.isdigit() else None,
+            "extension": suffix,
             "supported": supported,
             "message": "Direct audio media is ready to download." if supported else "The URL does not identify an authorized direct audio resource.",
         }
@@ -81,34 +107,43 @@ async def analyze(request: UrlRequest):
 async def download(request: UrlRequest):
     url = str(request.url)
     validate_source(url)
+    temporary: Path | None = None
     try:
         async with httpx.AsyncClient(follow_redirects=True, timeout=None) as client:
             async with client.stream("GET", url) as response:
                 response.raise_for_status()
                 content_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
-                suffix = AUDIO_TYPES.get(content_type) or Path(urlparse(str(response.url)).path).suffix.lower()
-                if suffix not in AUDIO_TYPES.values():
+                resolved_url = str(response.url)
+                suffix = media_suffix(content_type, resolved_url)
+                if suffix is None:
                     raise HTTPException(status_code=415, detail="The URL is not a supported direct audio resource.")
 
-                name = Path(unquote(urlparse(str(response.url)).path)).name
+                name = Path(unquote(urlparse(resolved_url).path)).name
                 stem = safe_filename(Path(name).stem if name else "track")
-                filename = f"{stem}{suffix}"
-                target = DOWNLOAD_ROOT / filename
-                counter = 1
-                while target.exists():
-                    target = DOWNLOAD_ROOT / f"{stem} ({counter}){suffix}"
-                    counter += 1
+                target = unique_target(stem, suffix)
+                temporary = target.with_name(f".{target.name}.part")
 
                 size = 0
-                with target.open("wb") as output:
+                with temporary.open("wb") as output:
                     async for chunk in response.aiter_bytes(1024 * 1024):
                         output.write(chunk)
                         size += len(chunk)
+                temporary.replace(target)
 
-        return DownloadResponse(status="completed", filename=target.name, size=size, content_type=content_type)
+        return DownloadResponse(
+            status="completed",
+            filename=target.name,
+            size=size,
+            content_type=content_type,
+            download_url=f"/files/{target.name}",
+        )
     except HTTPException:
+        if temporary and temporary.exists():
+            temporary.unlink(missing_ok=True)
         raise
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPError, OSError) as exc:
+        if temporary and temporary.exists():
+            temporary.unlink(missing_ok=True)
         raise HTTPException(status_code=502, detail=f"Download failed: {exc}") from exc
 
 
