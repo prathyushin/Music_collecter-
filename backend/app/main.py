@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, HttpUrl
 
-app = FastAPI(title="Music Collecter API", version="1.2.0")
+app = FastAPI(title="Music Collecter API", version="1.2.1")
 DOWNLOAD_ROOT = Path(os.getenv("MUSIC_COLLECTER_DOWNLOADS", "downloads")).resolve()
 DOWNLOAD_ROOT.mkdir(parents=True, exist_ok=True)
 
@@ -24,6 +24,15 @@ AUDIO_TYPES = {
     "audio/wav": ".wav",
     "audio/x-wav": ".wav",
     "audio/webm": ".webm",
+}
+
+PROTECTED_PLATFORM_HOSTS = {
+    "youtube.com",
+    "www.youtube.com",
+    "m.youtube.com",
+    "music.youtube.com",
+    "youtu.be",
+    "www.youtu.be",
 }
 
 
@@ -52,6 +61,11 @@ def validate_source(url: str) -> None:
         raise HTTPException(status_code=400, detail="Only valid HTTP(S) media URLs are supported.")
 
 
+def is_protected_platform(url: str) -> bool:
+    host = urlparse(url).hostname or ""
+    return host.lower().rstrip(".") in PROTECTED_PLATFORM_HOSTS
+
+
 def media_suffix(content_type: str, url: str) -> str | None:
     suffix = AUDIO_TYPES.get(content_type.lower())
     if suffix:
@@ -78,6 +92,19 @@ def health():
 async def analyze(request: UrlRequest):
     url = str(request.url)
     validate_source(url)
+
+    if is_protected_platform(url):
+        return {
+            "url": url,
+            "resolved_url": url,
+            "host": urlparse(url).netloc,
+            "content_type": "protected-platform-page",
+            "size": None,
+            "extension": None,
+            "supported": False,
+            "message": "This platform page is not a direct audio resource. Use an official or authorized download source instead.",
+        }
+
     try:
         async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
             response = await client.head(url)
@@ -107,6 +134,9 @@ async def analyze(request: UrlRequest):
 async def download(request: UrlRequest):
     url = str(request.url)
     validate_source(url)
+    if is_protected_platform(url):
+        raise HTTPException(status_code=403, detail="Protected platform pages cannot be downloaded by this service.")
+
     temporary: Path | None = None
     try:
         async with httpx.AsyncClient(follow_redirects=True, timeout=None) as client:
