@@ -1,7 +1,7 @@
 name: music_collecter
-description: Cross-platform music library and authorized media downloader.
+description: Minimal cross-platform client for authorized music and media collection.
 publish_to: "none"
-version: 1.0.0+1
+version: 1.0.0-zen1+1
 environment:
   sdk: ">=3.4.0 <4.0.0"
 dependencies:
