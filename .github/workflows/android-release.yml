@@ -47,14 +47,28 @@ jobs:
           fi
           yes | "$SDKMANAGER" --licenses >/dev/null || true
           "$SDKMANAGER" "platforms;android-36" "build-tools;36.0.0"
-          sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 36/' android/app/build.gradle.kts
           python3 - <<'PY'
           from pathlib import Path
-          p = Path('android/app/src/main/AndroidManifest.xml')
+          p = Path('android/app/build.gradle.kts')
           text = p.read_text()
-          text = text.replace('<application', '<application android:usesCleartextTraffic="true"', 1)
-          p.write_text(text)
+          lines = text.splitlines()
+          replaced = False
+          for i, line in enumerate(lines):
+              if 'compileSdk' in line and '=' in line and not line.lstrip().startswith('//'):
+                  indent = line[:len(line) - len(line.lstrip())]
+                  lines[i] = f'{indent}compileSdk = 36'
+                  replaced = True
+                  break
+          if not replaced:
+              raise SystemExit('Could not locate compileSdk in android/app/build.gradle.kts')
+          p.write_text('\n'.join(lines) + '\n')
+          manifest = Path('android/app/src/main/AndroidManifest.xml')
+          m = manifest.read_text()
+          if 'android:usesCleartextTraffic=' not in m:
+              m = m.replace('<application', '<application android:usesCleartextTraffic="true"', 1)
+              manifest.write_text(m)
           PY
+          grep -n "compileSdk" android/app/build.gradle.kts
 
       - name: Install dependencies
         run: flutter pub get
