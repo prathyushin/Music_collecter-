@@ -32,7 +32,7 @@ jobs:
       - name: Generate Android platform files
         run: flutter create --platforms=android --project-name=music_collecter .
 
-      - name: Configure Android SDK
+      - name: Configure Android SDK and networking
         shell: bash
         run: |
           set -euo pipefail
@@ -48,6 +48,13 @@ jobs:
           yes | "$SDKMANAGER" --licenses >/dev/null || true
           "$SDKMANAGER" "platforms;android-36" "build-tools;36.0.0"
           sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 36/' android/app/build.gradle.kts
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('android/app/src/main/AndroidManifest.xml')
+          text = p.read_text()
+          text = text.replace('<application', '<application android:usesCleartextTraffic="true"', 1)
+          p.write_text(text)
+          PY
 
       - name: Install dependencies
         run: flutter pub get
@@ -60,6 +67,16 @@ jobs:
 
       - name: Build release APK
         run: flutter build apk --release
+
+      - name: Verify APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="build/app/outputs/flutter-apk/app-release.apk"
+          test -s "$APK"
+          echo "APK size: $(stat -c%s "$APK") bytes"
+          unzip -t "$APK" >/dev/null
+          echo "APK archive integrity: OK"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
