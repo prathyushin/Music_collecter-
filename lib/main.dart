@@ -7,6 +7,11 @@ import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+const kApiBaseUrl = String.fromEnvironment(
+  'MUSIC_COLLECTER_API_URL',
+  defaultValue: 'https://music-collecter-api.onrender.com',
+);
+
 void main() => runApp(const MusicCollecterApp());
 
 class MusicCollecterApp extends StatelessWidget {
@@ -45,27 +50,25 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   final controller = TextEditingController();
-  final apiController = TextEditingController(text: 'http://127.0.0.1:8000');
   final List<DownloadItem> queue = [];
   final http.Client client = http.Client();
 
   String output = 'App storage';
-  String message = '';
+  String message = 'Connecting to Music Collecter…';
+  bool serverOnline = false;
   bool busy = false;
 
   @override
   void initState() {
     super.initState();
     _loadSettings();
+    _checkServer();
   }
 
   Future<void> _loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
     if (!mounted) return;
-    setState(() {
-      output = prefs.getString('output_dir') ?? 'App storage';
-      apiController.text = prefs.getString('api_url') ?? 'http://127.0.0.1:8000';
-    });
+    setState(() => output = prefs.getString('output_dir') ?? 'App storage');
   }
 
   Future<Directory> _outputDirectory() async {
@@ -87,13 +90,23 @@ class _HomePageState extends State<HomePage> {
     setState(() => output = path);
   }
 
-  Future<void> saveApi() async {
-    final value = apiController.text.trim().replaceAll(RegExp(r'/$'), '');
-    if (value.isEmpty) return;
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('api_url', value);
-    if (!mounted) return;
-    setState(() => message = 'Server address saved.');
+  String get _baseUrl => kApiBaseUrl.replaceAll(RegExp(r'/$'), '');
+
+  Future<void> _checkServer() async {
+    try {
+      final response = await client.get(Uri.parse('$_baseUrl/health')).timeout(const Duration(seconds: 12));
+      if (!mounted) return;
+      setState(() {
+        serverOnline = response.statusCode == 200;
+        message = serverOnline ? 'Ready.' : 'Service is temporarily unavailable.';
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        serverOnline = false;
+        message = 'Can’t reach Music Collecter right now. Try again in a moment.';
+      });
+    }
   }
 
   void addUrl() {
@@ -102,42 +115,41 @@ class _HomePageState extends State<HomePage> {
     setState(() {
       queue.insert(0, DownloadItem(url: url));
       controller.clear();
-      message = '';
+      message = serverOnline ? 'Ready.' : 'Checking the service…';
     });
+    if (!serverOnline) _checkServer();
   }
 
   Future<void> analyzeAndDownload(int index) async {
     if (busy || index < 0 || index >= queue.length) return;
     final item = queue[index];
-    final base = apiController.text.trim().replaceAll(RegExp(r'/$'), '');
-    if (base.isEmpty) {
-      _setStatus(item, 'Server address is empty');
-      return;
-    }
     setState(() {
       busy = true;
       item.status = 'Checking source';
       item.progress = 0;
+      message = '';
     });
+
     try {
-      final analyze = await client.post(Uri.parse('$base/analyze'), headers: {'Content-Type': 'application/json'}, body: jsonEncode({'url': item.url}));
+      final analyze = await client
+          .post(Uri.parse('$_baseUrl/analyze'), headers: {'Content-Type': 'application/json'}, body: jsonEncode({'url': item.url}))
+          .timeout(const Duration(seconds: 30));
       if (analyze.statusCode < 200 || analyze.statusCode >= 300) throw Exception(_error(analyze.body));
       final info = jsonDecode(analyze.body) as Map<String, dynamic>;
-      if (info['supported'] != true) throw Exception(info['message'] ?? 'Unsupported source');
+      if (info['supported'] != true) throw Exception(info['message'] ?? 'This source is not supported.');
 
       setState(() => item.status = 'Downloading');
-      final download = await client.post(Uri.parse('$base/download'), headers: {'Content-Type': 'application/json'}, body: jsonEncode({'url': item.url}));
-      if (download.statusCode < 200 || download.statusCode >= 300) throw Exception(_error(download.body));
-      final result = jsonDecode(download.body) as Map<String, dynamic>;
-      final filename = (result['filename'] ?? 'track').toString();
-      final remotePath = (result['download_url'] ?? '').toString();
-      if (remotePath.isEmpty) throw Exception('Server returned no file.');
+      final request = http.Request('POST', Uri.parse('$_baseUrl/download'))
+        ..headers['Content-Type'] = 'application/json'
+        ..body = jsonEncode({'url': item.url});
+      final response = await client.send(request);
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        final body = await response.stream.bytesToString();
+        throw Exception(_error(body));
+      }
 
-      setState(() {
-        item.status = 'Saving';
-        item.progress = 0;
-      });
-      await _saveRemoteFile(base, remotePath, filename, item);
+      final filename = response.headers['x-music-collecter-filename'] ?? _filenameFromContentDisposition(response.headers['content-disposition']) ?? 'track${_extensionForContentType(response.headers['content-type'])}';
+      await _saveStream(response, filename, item);
       _setStatus(item, filename, completed: true);
     } catch (e) {
       _setStatus(item, _cleanException(e), failed: true);
@@ -146,16 +158,13 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<void> _saveRemoteFile(String base, String remotePath, String filename, DownloadItem item) async {
+  Future<void> _saveStream(http.StreamedResponse response, String filename, DownloadItem item) async {
     final directory = await _outputDirectory();
     final target = await _uniqueFile(directory, filename);
     final temporary = File('${target.path}.part');
+    final total = response.contentLength;
+    var received = 0;
     try {
-      final uri = Uri.parse(remotePath.startsWith('http://') || remotePath.startsWith('https://') ? remotePath : '$base$remotePath');
-      final response = await client.send(http.Request('GET', uri));
-      if (response.statusCode < 200 || response.statusCode >= 300) throw Exception('File transfer failed (${response.statusCode}).');
-      final total = response.contentLength;
-      var received = 0;
       final sink = temporary.openWrite();
       try {
         await for (final chunk in response.stream) {
@@ -194,16 +203,26 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<void> testConnection() async {
-    final base = apiController.text.trim().replaceAll(RegExp(r'/$'), '');
-    if (base.isEmpty) return;
-    setState(() => message = 'Checking server…');
-    try {
-      final response = await client.get(Uri.parse('$base/health'));
-      setState(() => message = response.statusCode == 200 ? 'Server connected.' : 'Server returned HTTP ${response.statusCode}.');
-    } catch (e) {
-      setState(() => message = 'Connection failed: ${_cleanException(e)}');
-    }
+  String? _filenameFromContentDisposition(String? value) {
+    if (value == null) return null;
+    final match = RegExp(r'filename="?([^";]+)').firstMatch(value);
+    return match?.group(1);
+  }
+
+  String _extensionForContentType(String? value) {
+    final type = (value ?? '').split(';').first.toLowerCase();
+    const types = {
+      'audio/mpeg': '.mp3',
+      'audio/mp4': '.m4a',
+      'audio/x-m4a': '.m4a',
+      'audio/aac': '.aac',
+      'audio/ogg': '.ogg',
+      'audio/flac': '.flac',
+      'audio/wav': '.wav',
+      'audio/x-wav': '.wav',
+      'audio/webm': '.webm',
+    };
+    return types[type] ?? '.audio';
   }
 
   void _setStatus(DownloadItem item, String value, {bool completed = false, bool failed = false}) {
@@ -221,16 +240,20 @@ class _HomePageState extends State<HomePage> {
       final json = jsonDecode(body) as Map<String, dynamic>;
       return (json['detail'] ?? json['message'] ?? 'Request failed').toString();
     } catch (_) {
-      return 'Request failed';
+      return 'The service could not complete that request.';
     }
   }
 
-  String _cleanException(Object error) => error.toString().replaceFirst('Exception: ', '').trim();
+  String _cleanException(Object error) {
+    final text = error.toString().replaceFirst('Exception: ', '').trim();
+    if (text.contains('SocketException') || text.contains('ClientException')) return 'Network connection failed. Please try again.';
+    if (text.contains('TimeoutException')) return 'The request timed out. Please try again.';
+    return text;
+  }
 
   @override
   void dispose() {
     controller.dispose();
-    apiController.dispose();
     client.close();
     super.dispose();
   }
@@ -246,7 +269,6 @@ class _HomePageState extends State<HomePage> {
         title: const Text('Music Collecter', style: TextStyle(fontWeight: FontWeight.w700, letterSpacing: -0.5)),
         actions: [
           IconButton(onPressed: chooseFolder, tooltip: 'Storage', icon: const Icon(Icons.folder_outlined)),
-          IconButton(onPressed: _showSettings, tooltip: 'Settings', icon: const Icon(Icons.tune_rounded)),
           const SizedBox(width: 8),
         ],
       ),
@@ -260,9 +282,15 @@ class _HomePageState extends State<HomePage> {
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   const Spacer(),
+                  Row(children: [
+                    Container(width: 8, height: 8, decoration: BoxDecoration(shape: BoxShape.circle, color: serverOnline ? Colors.green : Colors.black26)),
+                    const SizedBox(width: 8),
+                    Text(serverOnline ? 'Online' : 'Connecting', style: theme.textTheme.labelLarge?.copyWith(color: Colors.black54)),
+                  ]),
+                  const SizedBox(height: 12),
                   Text('Collect your music.', style: theme.textTheme.displaySmall?.copyWith(fontWeight: FontWeight.w700, letterSpacing: -1.6)),
                   const SizedBox(height: 8),
-                  Text('Paste an authorized direct audio link. Keep the interface simple; let the queue do the work.', style: theme.textTheme.bodyLarge?.copyWith(color: Colors.black54, height: 1.45)),
+                  Text('Paste an authorized direct audio link. No server setup required.', style: theme.textTheme.bodyLarge?.copyWith(color: Colors.black54, height: 1.45)),
                   const SizedBox(height: 28),
                   Container(
                     padding: const EdgeInsets.all(8),
@@ -314,21 +342,6 @@ class _HomePageState extends State<HomePage> {
         const SizedBox(width: 8),
         IconButton(onPressed: busy || item.completed ? null : () => analyzeAndDownload(index), icon: const Icon(Icons.arrow_downward_rounded)),
       ]),
-    );
-  }
-
-  Future<void> _showSettings() async {
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Connection'),
-        content: TextField(controller: apiController, keyboardType: TextInputType.url, decoration: const InputDecoration(labelText: 'FastAPI server', hintText: 'http://192.168.x.x:8000')),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
-          TextButton(onPressed: () { Navigator.pop(dialogContext); saveApi(); }, child: const Text('Save')),
-          FilledButton(onPressed: () { Navigator.pop(dialogContext); saveApi().then((_) => testConnection()); }, child: const Text('Save & test')),
-        ],
-      ),
     );
   }
 }
