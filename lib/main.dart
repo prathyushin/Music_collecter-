@@ -23,22 +23,12 @@ class MusicCollecterApp extends StatelessWidget {
         useMaterial3: true,
         scaffoldBackgroundColor: paper,
         colorScheme: ColorScheme.fromSeed(seedColor: ink, brightness: Brightness.light),
-        fontFamily: 'sans',
         inputDecorationTheme: InputDecorationTheme(
           filled: true,
           fillColor: Colors.white,
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(16),
-            borderSide: BorderSide.none,
-          ),
-          enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(16),
-            borderSide: const BorderSide(color: Color(0xFFE6E6E2)),
-          ),
-          focusedBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(16),
-            borderSide: const BorderSide(color: ink, width: 1.2),
-          ),
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide.none),
+          enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: const BorderSide(color: Color(0xFFE6E6E2))),
+          focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: const BorderSide(color: ink, width: 1.2)),
         ),
       ),
       home: const HomePage(),
@@ -124,37 +114,20 @@ class _HomePageState extends State<HomePage> {
       _setStatus(item, 'Server address is empty');
       return;
     }
-
     setState(() {
       busy = true;
       item.status = 'Checking source';
       item.progress = 0;
     });
-
     try {
-      final analyze = await client.post(
-        Uri.parse('$base/analyze'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'url': item.url}),
-      );
-      if (analyze.statusCode < 200 || analyze.statusCode >= 300) {
-        throw Exception(_error(analyze.body));
-      }
+      final analyze = await client.post(Uri.parse('$base/analyze'), headers: {'Content-Type': 'application/json'}, body: jsonEncode({'url': item.url}));
+      if (analyze.statusCode < 200 || analyze.statusCode >= 300) throw Exception(_error(analyze.body));
       final info = jsonDecode(analyze.body) as Map<String, dynamic>;
-      if (info['supported'] != true) {
-        throw Exception(info['message'] ?? 'Unsupported source');
-      }
+      if (info['supported'] != true) throw Exception(info['message'] ?? 'Unsupported source');
 
       setState(() => item.status = 'Downloading');
-      final download = await client.post(
-        Uri.parse('$base/download'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'url': item.url}),
-      );
-      if (download.statusCode < 200 || download.statusCode >= 300) {
-        throw Exception(_error(download.body));
-      }
-
+      final download = await client.post(Uri.parse('$base/download'), headers: {'Content-Type': 'application/json'}, body: jsonEncode({'url': item.url}));
+      if (download.statusCode < 200 || download.statusCode >= 300) throw Exception(_error(download.body));
       final result = jsonDecode(download.body) as Map<String, dynamic>;
       final filename = (result['filename'] ?? 'track').toString();
       final remotePath = (result['download_url'] ?? '').toString();
@@ -178,10 +151,9 @@ class _HomePageState extends State<HomePage> {
     final target = await _uniqueFile(directory, filename);
     final temporary = File('${target.path}.part');
     try {
-      final response = await client.send(http.Request('GET', Uri.parse('$base$remotePath')));
-      if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw Exception('File transfer failed (${response.statusCode}).');
-      }
+      final uri = Uri.parse(remotePath.startsWith('http://') || remotePath.startsWith('https://') ? remotePath : '$base$remotePath');
+      final response = await client.send(http.Request('GET', uri));
+      if (response.statusCode < 200 || response.statusCode >= 300) throw Exception('File transfer failed (${response.statusCode}).');
       final total = response.contentLength;
       var received = 0;
       final sink = temporary.openWrite();
@@ -189,9 +161,7 @@ class _HomePageState extends State<HomePage> {
         await for (final chunk in response.stream) {
           sink.add(chunk);
           received += chunk.length;
-          if (mounted && total != null && total > 0) {
-            setState(() => item.progress = received / total);
-          }
+          if (mounted && total != null && total > 0) setState(() => item.progress = received / total);
         }
       } finally {
         await sink.close();
@@ -297,13 +267,11 @@ class _HomePageState extends State<HomePage> {
                   Container(
                     padding: const EdgeInsets.all(8),
                     decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(22), border: Border.all(color: const Color(0xFFE6E6E2))),
-                    child: Row(
-                      children: [
-                        Expanded(child: TextField(controller: controller, onSubmitted: (_) => addUrl(), decoration: const InputDecoration(hintText: 'Paste audio URL', prefixIcon: Icon(Icons.link_rounded), filled: false, border: InputBorder.none, enabledBorder: InputBorder.none, focusedBorder: InputBorder.none))),
-                        const SizedBox(width: 4),
-                        FilledButton(onPressed: busy ? null : addUrl, style: FilledButton.styleFrom(minimumSize: const Size(92, 52), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), child: const Text('Add')),
-                      ],
-                    ),
+                    child: Row(children: [
+                      Expanded(child: TextField(controller: controller, onSubmitted: (_) => addUrl(), decoration: const InputDecoration(hintText: 'Paste audio URL', prefixIcon: Icon(Icons.link_rounded), filled: false, border: InputBorder.none, enabledBorder: InputBorder.none, focusedBorder: InputBorder.none))),
+                      const SizedBox(width: 4),
+                      FilledButton(onPressed: busy ? null : addUrl, style: FilledButton.styleFrom(minimumSize: const Size(92, 52), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), child: const Text('Add')),
+                    ]),
                   ),
                   const SizedBox(height: 14),
                   Row(children: [
@@ -312,10 +280,7 @@ class _HomePageState extends State<HomePage> {
                     Expanded(child: Text(output, maxLines: 1, overflow: TextOverflow.ellipsis, style: theme.textTheme.bodySmall?.copyWith(color: Colors.black54))),
                     TextButton.icon(onPressed: queue.isEmpty || busy ? null : downloadAll, icon: const Icon(Icons.download_rounded, size: 18), label: const Text('Download all')),
                   ]),
-                  if (message.isNotEmpty) ...[
-                    const SizedBox(height: 8),
-                    Text(message, style: theme.textTheme.bodySmall?.copyWith(color: Colors.black54)),
-                  ],
+                  if (message.isNotEmpty) ...[const SizedBox(height: 8), Text(message, style: theme.textTheme.bodySmall?.copyWith(color: Colors.black54))],
                   const SizedBox(height: 22),
                   if (queue.isEmpty)
                     Container(
