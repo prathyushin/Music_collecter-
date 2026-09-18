@@ -148,7 +148,7 @@ class _HomePageState extends State<HomePage> {
 
       final filename = response.headers['x-music-collecter-filename'] ??
           _filenameFromDisposition(response.headers['content-disposition']) ??
-          'track\${_extension(response.headers['content-type'])}';
+          'track${_extension(response.headers['content-type'])}';
 
       await _saveStream(response, filename, item);
       if (!mounted) return;
@@ -168,7 +168,7 @@ class _HomePageState extends State<HomePage> {
   Future<void> _saveStream(http.StreamedResponse response, String filename, DownloadItem item) async {
     final dir = await _outputDirectory();
     final target = await _uniqueFile(dir, filename);
-    final temporary = File('\${target.path}.part');
+    final temporary = File('${target.path}.part');
     final total = response.contentLength;
     var received = 0;
     try {
@@ -192,13 +192,13 @@ class _HomePageState extends State<HomePage> {
   Future<File> _uniqueFile(Directory dir, String filename) async {
     final clean = filename.replaceAll(RegExp(r'[\\/:*?"<>|\x00-\x1f]'), '_').trim();
     final safe = clean.isEmpty ? 'track.audio' : clean;
-    var file = File('\${dir.path}/\$safe');
+    var file = File('${dir.path}/$safe');
     var n = 1;
     final dot = safe.lastIndexOf('.');
     final stem = dot > 0 ? safe.substring(0, dot) : safe;
     final ext = dot > 0 ? safe.substring(dot) : '';
     while (await file.exists()) {
-      file = File('\${dir.path}/\$stem (\$n)\$ext');
+      file = File('${dir.path}/$stem ($n)$ext');
       n++;
     }
     return file;
