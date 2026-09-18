@@ -118,3 +118,7 @@ The minimalist v1.0-zen1 client is the usable foundation. Later releases can add
 - richer library and player UI
 - desktop installers
 - signed production releases
+
+
+## Build
+The release workflow builds the Android APK from `main`.
