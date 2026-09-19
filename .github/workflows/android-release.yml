@@ -8,7 +8,7 @@ on:
     branches: [main]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   android-apk:
@@ -92,10 +92,31 @@ jobs:
           unzip -t "$APK" >/dev/null
           echo "APK archive integrity: OK"
 
-      - name: Upload APK
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: music-collecter-v1.0-zen1-android
           path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
           retention-days: 30
+
+      - name: Publish V1 Zen GitHub Release
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.0-zen
+          name: Music Collector V1.0.0 — Zen
+          body: |
+            # Music Collector V1.0.0 — Zen
+
+            Minimal Android release focused on a fast, low-friction collection flow.
+
+            - Android release APK
+            - Direct-link queue
+            - Progress feedback
+            - App storage or selected folder
+            - Authorized media only
+
+            This release is built automatically by GitHub Actions.
+          files: build/app/outputs/flutter-apk/app-release.apk
+          fail_on_unmatched_files: true
